@@ -27,7 +27,7 @@ cd "$here" || exit 1
 CPPSTD=c++11    #c++89, c++99, c++14
 STDLIB=libc++   # libstdc++
 COMPILER=clang++
-PARALLEL_MAKE=16   # how many threads to make boost with
+PARALLEL_MAKE=`sysctl -n hw.ncpu` # how many threads to make boost with
 
 BOOST_V1=1.60.0
 BOOST_V2=1_60_0
@@ -65,7 +65,7 @@ case $CURRENTPATH in
           ;;
 esac
 
-: ${BOOST_LIBS:="random regex graph random chrono thread signals filesystem system date_time"}
+: ${BOOST_LIBS:="random regex graph random chrono thread signals filesystem system date_time locale"}
 : ${IPHONE_SDKVERSION:=`xcodebuild -showsdks | grep iphoneos | egrep "[[:digit:]]+\.[[:digit:]]+" -o | tail -1`}
 : ${EXTRA_CPPFLAGS:="-fPIC -DBOOST_SP_USE_SPINLOCK -std=$CPPSTD -stdlib=$STDLIB -miphoneos-version-min=$IOS_MIN_VERSION $BITCODE -fvisibility=hidden -fvisibility-inlines-hidden"}
 
@@ -182,6 +182,23 @@ unpackBoost()
     [ -d $BOOST_SRC ] || ( cd $SRCDIR; tar xfj $BOOST_TARBALL )
     [ -d $BOOST_SRC ] && echo "    ...unpacked as $BOOST_SRC"
 
+    # Fix linker issue with utf8_codecvt_facet.cpp
+    # copied from http://swift.im/git/swift/tree/3rdParty/Boost/update.sh#n48?id=8dce1cd03729624a25a98dd2c0d026b93e452f86
+    echo Fixing utf8_codecvt_facet.cpp duplicates...
+
+    [ -f "$BOOST_SRC/libs/filesystem/src/utf8_codecvt_facet.cpp" ] && (mv "$BOOST_SRC/libs/filesystem/src/utf8_codecvt_facet.cpp" "$BOOST_SRC/libs/filesystem/src/filesystem_utf8_codecvt_facet.cpp" )
+    /usr/bin/sed -i .bak 's/utf8_codecvt_facet/filesystem_utf8_codecvt_facet/' "$BOOST_SRC/libs/filesystem/build/Jamfile.v2"
+
+    [ -f "$BOOST_SRC/libs/program_options/src/utf8_codecvt_facet.cpp" ] && (mv "$BOOST_SRC/libs/program_options/src/utf8_codecvt_facet.cpp" "$BOOST_SRC/libs/program_options/src/program_options_utf8_codecvt_facet.cpp" )
+    /usr/bin/sed -i .bak 's/utf8_codecvt_facet/program_options_utf8_codecvt_facet/' "$BOOST_SRC/libs/program_options/build/Jamfile.v2"
+
+    for lib in $BOOST_LIBS; do
+      rm -rf $BOOST_SRC/libs/$lib/*.doc $BOOST_SRC/libs/$lib/src/*.doc $BOOST_SRC/libs/$lib/test
+    done
+    rm -rf $BOOST_SRC/tools/bcp/*.html $BOOST_SRC/libs/test $BOOST_SRC/doc $BOOST_SRC/boost.png $BOOST_SRC/boost/test
+
+    echo Fixed utf8_codecvt_facet.cpp duplicates...
+
     doneSection
 }
 
@@ -203,18 +220,17 @@ updateBoost()
     local CROSS_SDK_SIM="iPhoneSimulator${SDKVERSION}.sdk"
     local BUILD_TOOLS="${DEVELOPER}"
 
+    /usr/bin/sed -ie 's/-arch arm/-arch armv7 -arch arm64/g' "${BOOST_SRC}/tools/build/src/tools/darwin.jam"
     cp $BOOST_SRC/tools/build/example/user-config.jam $BOOST_SRC/tools/build/example/user-config.jam.bk
 
     cat >> $BOOST_SRC/tools/build/example/user-config.jam <<EOF
 using darwin : ${IPHONE_SDKVERSION}~iphone
-: $XCODE_ROOT/Toolchains/XcodeDefault.xctoolchain/usr/bin/$COMPILER -arch armv7 -arch arm64 $EXTRA_CPPFLAGS "-isysroot ${CROSS_TOP_IOS}/SDKs/${CROSS_SDK_IOS}" -I${CROSS_TOP_IOS}/SDKs/${CROSS_SDK_IOS}/usr/include/
-: <striper> <root>$XCODE_ROOT/Platforms/iPhoneOS.platform/Developer
-: <architecture>arm <target-os>iphone
+: $XCODE_ROOT/Toolchains/XcodeDefault.xctoolchain/usr/bin/$COMPILER -arch armv7 -arch arm64 $EXTRA_CPPFLAGS -isysroot ${CROSS_TOP_IOS}/SDKs/${CROSS_SDK_IOS} -I${CROSS_TOP_IOS}/SDKs/${CROSS_SDK_IOS}/usr/include/ -L${CROSS_TOP_IOS}/SDKs/${CROSS_SDK_IOS}/usr/lib/
+: <striper> <root>$XCODE_ROOT/Platforms/iPhoneOS.platform/Developer <architecture>arm <target-os>iphone
 ;
 using darwin : ${IPHONE_SDKVERSION}~iphonesim
-: $XCODE_ROOT/Toolchains/XcodeDefault.xctoolchain/usr/bin/$COMPILER -arch i386 -arch x86_64 $EXTRA_CPPFLAGS "-isysroot ${CROSS_TOP_SIM}/SDKs/${CROSS_SDK_SIM}" -I${CROSS_TOP_SIM}/SDKs/${CROSS_SDK_SIM}/usr/include/
-: <striper> <root>$XCODE_ROOT/Platforms/iPhoneSimulator.platform/Developer
-: <architecture>x86 <target-os>iphone
+: $XCODE_ROOT/Toolchains/XcodeDefault.xctoolchain/usr/bin/$COMPILER -arch i386 -arch x86_64 $EXTRA_CPPFLAGS -isysroot ${CROSS_TOP_SIM}/SDKs/${CROSS_SDK_SIM} -I${CROSS_TOP_SIM}/SDKs/${CROSS_SDK_SIM}/usr/include/
+: <striper> <root>$XCODE_ROOT/Platforms/iPhoneSimulator.platform/Developer <architecture>x86 <target-os>iphone
 ;
 EOF
 
@@ -239,7 +255,7 @@ bootstrapBoost()
 {
     cd $BOOST_SRC
 
-    BOOST_LIBS_COMMA=$(echo $BOOST_LIBS | sed -e "s/ /,/g")
+    BOOST_LIBS_COMMA=$(echo $BOOST_LIBS | /usr/bin/sed -e "s/ /,/g")
     echo "Bootstrapping (with libs $BOOST_LIBS_COMMA)"
     ./bootstrap.sh --with-libraries=$BOOST_LIBS_COMMA
 
@@ -317,7 +333,7 @@ scrunchAllLibsTogetherInOneLibPerPlatform()
     mkdir -p $IOSBUILDDIR/i386/obj
 	mkdir -p $IOSBUILDDIR/x86_64/obj
 
-    ALL_LIBS=$(find iphone-build/stage/lib -name "libboost_*.a" | sed -n 's/.*\(libboost_.*.a\)/\1/p' | paste -sd " " -)
+    ALL_LIBS=$(find iphone-build/stage/lib -name "libboost_*.a" | /usr/bin/sed -n 's/.*\(libboost_.*.a\)/\1/p' | paste -sd " " -)
 
     echo Splitting all existing fat binaries...
 
